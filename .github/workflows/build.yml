@@ -36,7 +36,7 @@ jobs:
           # FakeHTTP/FakeSIP, so it can only be built for the MediaTek
           # mt7622 target (Linksys E8450). x86 builds are intentionally
           # omitted because there are no matching binaries for them.
-          - openwrt_version: "24.10.6"
+          - openwrt_version: "24.10.7"
             target: "mediatek/mt7622"
             target_name: "mediatek-mt7622"
 
