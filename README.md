@@ -9,7 +9,7 @@ under one **Services -> Taoist Fuchen** menu:
 
 FakeHTTP and FakeSIP are open-source tools by MikeWang000000. This package ships
 their prebuilt **aarch64 (arm64)** binaries, so it is built specifically for the
-**MediaTek mt7622** target (e.g. the **Linksys E8450 / Belkin RT3200**).
+**aarch64 (arm64)** target (e.g. the **Linksys E8450 / Belkin RT3200**).
 
 ---
 
