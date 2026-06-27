@@ -1,0 +1,27 @@
+#!/bin/sh
+# Hardening for boot auto-start: when the network device a service binds to
+# actually comes up, (re)start that service. This covers slow WAN links (e.g.
+# PPPoE) where the interface may not exist yet at START=99 boot time, and also
+# re-binds cleanly after a WAN reconnect / PPPoE redial.
+#
+# NOTE: hotplug.d scripts are sourced, so this script deliberately avoids
+# calling 'exit' (which would abort the whole hotplug run and skip other
+# packages' scripts). It ends naturally instead.
+
+if [ "$ACTION" = "ifup" ]; then
+	for svc in fakehttp fakesip; do
+		[ -x "/etc/init.d/$svc" ] || continue
+
+		# Only services enabled in their config.
+		[ "$(uci -q get "$svc.main.enabled")" = "1" ] || continue
+
+		# Only when the just-upped device matches the one the service binds to.
+		iface="$(uci -q get "$svc.main.interface")"
+		[ -n "$iface" ] || continue
+
+		if [ "$DEVICE" = "$iface" ]; then
+			# Background it so we never block hotplug processing.
+			/etc/init.d/$svc restart >/dev/null 2>&1 &
+		fi
+	done
+fi

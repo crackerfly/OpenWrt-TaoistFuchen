@@ -1,0 +1,28 @@
+{
+	"luci-app-taoistfuchen": {
+		"description": "Grant access to Taoist Fuchen (Custom Logo, FakeHTTP, FakeSIP)",
+		"read": {
+			"uci": [ "taoistfuchen", "fakehttp", "fakesip" ],
+			"file": {
+				"/etc/taoistfuchen": [ "list", "read" ],
+				"/etc/taoistfuchen/*": [ "read" ],
+				"/sys/class/net": [ "list" ],
+				"/proc/net/route": [ "read" ],
+				"/tmp/fakehttp.log": [ "read" ],
+				"/tmp/fakesip.log": [ "read" ]
+			},
+			"ubus": {
+				"service": [ "list" ]
+			}
+		},
+		"write": {
+			"uci": [ "taoistfuchen", "fakehttp", "fakesip" ],
+			"file": {
+				"/etc/taoistfuchen": [ "list", "write" ],
+				"/etc/taoistfuchen/*": [ "read", "write", "delete" ],
+				"/tmp/fakehttp.log": [ "write" ],
+				"/tmp/fakesip.log": [ "write" ]
+			}
+		}
+	}
+}
