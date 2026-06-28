@@ -1,0 +1,46 @@
+{
+	"admin/services/taoistfuchen": {
+		"title": "Taoist Fuchen",
+		"order": 60,
+		"icon": "sysauth",
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-taoistfuchen" ]
+		}
+	},
+	"admin/services/taoistfuchen/customlogo": {
+		"title": "Custom Logo",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "taoistfuchen/customlogo"
+		},
+		"depends": {
+			"acl": [ "luci-app-taoistfuchen" ]
+		}
+	},
+	"admin/services/taoistfuchen/fakehttp": {
+		"title": "FakeHTTP",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "taoistfuchen/fakehttp"
+		},
+		"depends": {
+			"acl": [ "luci-app-taoistfuchen" ]
+		}
+	},
+	"admin/services/taoistfuchen/fakesip": {
+		"title": "FakeSIP",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "taoistfuchen/fakesip"
+		},
+		"depends": {
+			"acl": [ "luci-app-taoistfuchen" ]
+		}
+	}
+}

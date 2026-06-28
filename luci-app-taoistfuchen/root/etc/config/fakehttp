@@ -1,0 +1,3 @@
+config fakehttp 'main'
+	option enabled '0'
+	option hostname 'www.speedtest.net'
