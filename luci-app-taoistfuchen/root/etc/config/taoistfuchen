@@ -1,4 +1,0 @@
-config taoistfuchen 'main'
-    option enable '0'
-    option favicon ''
-    option logo ''

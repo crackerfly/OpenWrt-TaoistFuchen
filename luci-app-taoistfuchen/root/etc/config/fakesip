@@ -1,2 +1,0 @@
-config fakesip 'main'
-	option enabled '0'
