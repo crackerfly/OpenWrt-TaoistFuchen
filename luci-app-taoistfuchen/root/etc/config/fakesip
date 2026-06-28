@@ -1,0 +1,3 @@
+config fakesip 'main'
+	option enabled '0'
+	option boot_delay '30'

@@ -1,0 +1,41 @@
+#!/bin/sh
+# Boot-time hardening for FakeHTTP / FakeSIP auto-start.
+#
+# When the device a service binds to comes up, make sure the service is
+# running. This covers slow WAN links (e.g. PPPoE) where the interface may
+# not exist yet at boot time, and WAN reconnects.
+#
+# Two safeguards:
+#  * Start ONLY if the service is not already running, so repeated ifup events
+#    (PPPoE renegotiation, IPv6 prefix refreshes, frequent reconnects) never
+#    put the service into a stop/start loop.
+#  * If a configurable boot-delay is in progress (marker file present), do NOT
+#    start early — let the timed boot start handle it, so the delay is honoured.
+#
+# hotplug.d scripts are sourced, so this script avoids calling 'exit' (which
+# would abort the whole hotplug run). It ends naturally instead.
+
+if [ "$ACTION" = "ifup" ]; then
+	for svc in fakehttp fakesip; do
+		[ -x "/etc/init.d/$svc" ] || continue
+
+		# Only services enabled in their config.
+		[ "$(uci -q get "$svc.main.enabled")" = "1" ] || continue
+
+		# Only when the just-upped device is the one the service binds to.
+		iface="$(uci -q get "$svc.main.interface")"
+		[ -n "$iface" ] || continue
+		[ "$DEVICE" = "$iface" ] || continue
+
+		# Respect an in-progress boot delay: skip while the (fresh) marker
+		# exists; ignore a stale marker (older than 3 min) for safety.
+		if [ -f "/tmp/$svc.bootwait" ] && [ -z "$(find "/tmp/$svc.bootwait" -mmin +3 2>/dev/null)" ]; then
+			continue
+		fi
+
+		# Start ONLY if it is not already running (no restart loops).
+		if ! pidof "$svc" >/dev/null 2>&1; then
+			/etc/init.d/$svc start >/dev/null 2>&1 &
+		fi
+	done
+fi
