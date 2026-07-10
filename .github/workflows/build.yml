@@ -32,14 +32,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The package bundles prebuilt aarch64 (arm64) binaries for
-          # FakeHTTP/FakeSIP, so it can only be built for the MediaTek
-          # mt7622 target (Linksys E8450). x86 builds are intentionally
-          # omitted because there are no matching binaries for them.
-          - openwrt_version: "24.10.7"
-            target: "mediatek/mt7622"
-            target_name: "mediatek-mt7622"
-
+          # The package is scoped to OpenWrt 25.12.5 and bundles verified
+          # aarch64_cortex-a53 release binaries.
           - openwrt_version: "25.12.5"
             target: "mediatek/mt7622"
             target_name: "mediatek-mt7622"
@@ -47,6 +41,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Verify source provenance and regression policy
+        run: |
+          set -eux
+
+          sha256sum -c third_party/SHA256SUMS
+          ./tests/run.sh
 
       - name: Install build dependencies
         run: |
@@ -161,6 +162,12 @@ jobs:
 
           mkdir -p output_pkg
 
+          # Keep the licenses, corresponding GPL source and provenance in the
+          # same downloadable artifact as the binary package.
+          cp THIRD_PARTY_SOURCES.md luci-app-taoistfuchen/COPYING \
+            luci-app-taoistfuchen/LICENSE output_pkg/
+          cp third_party/sources/*.tar.gz output_pkg/
+
           find openwrt-sdk/bin/packages/ -type f \( \
             -name "${PACKAGE_NAME}*.ipk" -o \
             -name "${PACKAGE_NAME}*.apk" \
@@ -173,7 +180,7 @@ jobs:
 
           (
             cd output_pkg
-            sha256sum *.*pk > SHA256SUMS
+            sha256sum COPYING LICENSE THIRD_PARTY_SOURCES.md *.tar.gz *.*pk > SHA256SUMS
           )
 
           echo "Generated packages:"
