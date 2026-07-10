@@ -1,0 +1,4 @@
+e684546895c8315beb0ff0b3684bb3bb538707a929253d9b682fabf4d42b5e33  third_party/sources/FakeHTTP-0.9.18.tar.gz
+ea5c16ec4adcb93d3487b6df98c548356b1e63fdbca30bacb0b4edf5961e3c00  third_party/sources/FakeSIP-Droid-MAX-0.9.3.tar.gz
+2a48dc7c1d61a582f438acad1c416414e8946d36dba72ddb0861b28e98e6d82c  luci-app-taoistfuchen/root/usr/bin/fakehttp
+3f49b5ef397dc0b5127ab5860668110309176787b1dafb5c1fa4ef55d39580b7  luci-app-taoistfuchen/root/usr/bin/fakesip
