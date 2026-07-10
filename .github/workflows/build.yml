@@ -42,6 +42,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
+      # Files uploaded through GitHub's web interface are recorded as 0644,
+      # even when they are executable in the source archive. Restore the
+      # runtime modes before running tests or copying the package into the SDK.
+      - name: Normalize executable permissions
+        run: |
+          set -eux
+
+          chmod 0755 \
+            tests/*.sh \
+            luci-app-taoistfuchen/root/etc/init.d/* \
+            luci-app-taoistfuchen/root/etc/hotplug.d/iface/99-taoistfuchen \
+            luci-app-taoistfuchen/root/etc/uci-defaults/99_taoistfuchen \
+            luci-app-taoistfuchen/root/usr/bin/fakehttp \
+            luci-app-taoistfuchen/root/usr/bin/fakesip \
+            luci-app-taoistfuchen/root/www/cgi-bin/taoistfuchen-upload
+
       - name: Verify source provenance and regression policy
         run: |
           set -eux
@@ -153,7 +169,53 @@ jobs:
         run: |
           set -eux
 
+          # The release SDK declares every prebuilt package as a hidden y/m
+          # default in Config-build.in. If left unchanged, depending on one
+          # kernel module causes the SDK to package hundreds of unrelated
+          # modules and firmware files. Neutralize only those SDK defaults;
+          # Kconfig will re-enable the package and its real dependencies.
+          awk '
+            /^config[[:space:]]+PACKAGE_/ {
+              in_package = 1
+            }
+            /^config[[:space:]]+/ &&
+                $0 !~ /^config[[:space:]]+PACKAGE_/ {
+              in_package = 0
+            }
+            in_package &&
+                /^[[:space:]]*default[[:space:]]+[my][[:space:]]*$/ {
+              sub(/default[[:space:]]+[my]/, "default n")
+            }
+            { print }
+          ' Config-build.in > Config-build.in.new
+          mv Config-build.in.new Config-build.in
+
+          printf '%s\n' \
+            '# CONFIG_ALL is not set' \
+            '# CONFIG_ALL_KMODS is not set' \
+            '# CONFIG_ALL_NONSHARED is not set' \
+            "CONFIG_PACKAGE_${PACKAGE_NAME}=m" > .config
+
           make defconfig
+
+          for symbol in ALL ALL_KMODS ALL_NONSHARED; do
+            grep -Fqx "# CONFIG_${symbol} is not set" .config
+          done
+          grep -Fqx "CONFIG_PACKAGE_${PACKAGE_NAME}=m" .config
+
+          # For the pinned 25.12.5 mediatek/mt7622 SDK this is the complete
+          # module set: this package, nftables-nojson, kmod-nft-queue and the
+          # three coreutils packages. Only nft-core is selected as a built-in
+          # kernel package, and no firmware package is required.
+          test "$(grep -c '^CONFIG_PACKAGE_.*=m$' .config)" -eq 6
+          test "$(grep -c '^CONFIG_PACKAGE_kmod-.*=m$' .config)" -eq 1
+          test "$(grep -c '^CONFIG_PACKAGE_kmod-.*=y$' .config)" -eq 1
+
+          if grep -E '^CONFIG_PACKAGE_.*firmware.*=[my]$' .config; then
+            echo "Unexpected firmware package selected"
+            exit 1
+          fi
+
           make package/${PACKAGE_NAME}/compile V=s -j"$(nproc)"
 
       - name: Prepare artifact
