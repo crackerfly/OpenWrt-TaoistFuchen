@@ -1,4 +1,0 @@
-config fakehttp 'main'
-	option enabled '0'
-	option hostname 'www.speedtest.net'
-	option boot_delay '30'
