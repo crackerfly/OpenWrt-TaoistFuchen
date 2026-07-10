@@ -18,6 +18,8 @@ permissions:
 
 env:
   PACKAGE_NAME: luci-app-taoistfuchen
+  SDK_FILE: openwrt-sdk-25.12.5-mediatek-mt7622_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+  SDK_SHA256: 0bd25a391256dbe9ad1f9c6f313364b1f9eddcc0e280c829d644034981ad8306
 
   # GitHub Actions Node.js 20 deprecation compatibility.
   # Force JavaScript actions to run with Node.js 24 now.
@@ -46,17 +48,7 @@ jobs:
       # even when they are executable in the source archive. Restore the
       # runtime modes before running tests or copying the package into the SDK.
       - name: Normalize executable permissions
-        run: |
-          set -eux
-
-          chmod 0755 \
-            tests/*.sh \
-            luci-app-taoistfuchen/root/etc/init.d/* \
-            luci-app-taoistfuchen/root/etc/hotplug.d/iface/99-taoistfuchen \
-            luci-app-taoistfuchen/root/etc/uci-defaults/99_taoistfuchen \
-            luci-app-taoistfuchen/root/usr/bin/fakehttp \
-            luci-app-taoistfuchen/root/usr/bin/fakesip \
-            luci-app-taoistfuchen/root/www/cgi-bin/taoistfuchen-upload
+        run: sh ./scripts/normalize-source-permissions.sh
 
       - name: Verify source provenance and regression policy
         run: |
@@ -112,28 +104,21 @@ jobs:
 
           wget -q "${BASE_URL}/sha256sums" -O sha256sums
 
-          SDK_FILE="$(awk '/openwrt-sdk/ { gsub(/^\*/, "", $2); print $2; exit }' sha256sums)"
+          REMOTE_SHA256="$(awk -v f="${SDK_FILE}" '
+            $2 == f || $2 == "*" f { print $1; exit }
+          ' sha256sums)"
 
-          if [ -z "${SDK_FILE}" ]; then
-            echo "OpenWrt SDK file was not found in sha256sums"
+          if [ "${REMOTE_SHA256}" != "${SDK_SHA256}" ]; then
+            echo "Pinned SDK checksum does not match the official manifest"
+            echo "Expected: ${SDK_SHA256}"
+            echo "Manifest: ${REMOTE_SHA256:-missing}"
             exit 1
           fi
 
-          echo "Matched SDK file: ${SDK_FILE}"
+          echo "Pinned SDK file: ${SDK_FILE}"
 
           wget -q "${BASE_URL}/${SDK_FILE}" -O "${SDK_FILE}"
-
-          awk -v f="${SDK_FILE}" '
-            $2 == f || $2 == "*" f {
-              print
-              found=1
-            }
-            END {
-              exit found ? 0 : 1
-            }
-          ' sha256sums > sha256sums.sdk
-
-          sha256sum -c sha256sums.sdk
+          printf '%s  %s\n' "${SDK_SHA256}" "${SDK_FILE}" | sha256sum -c -
 
           SDK_DIR="$(tar -tf "${SDK_FILE}" | head -n 1 | cut -d/ -f1)"
 
@@ -173,84 +158,11 @@ jobs:
         run: |
           set -eux
 
-          # The release SDK declares every prebuilt package as a hidden y/m
-          # default in Config-build.in. If left unchanged, depending on one
-          # kernel module causes the SDK to package hundreds of unrelated
-          # modules and firmware files. Neutralize only those SDK defaults;
-          # Kconfig will re-enable the package and its real dependencies.
-          awk '
-            /^config[[:space:]]+PACKAGE_/ {
-              in_package = 1
-            }
-            /^config[[:space:]]+/ &&
-                $0 !~ /^config[[:space:]]+PACKAGE_/ {
-              in_package = 0
-            }
-            in_package &&
-                /^[[:space:]]*default[[:space:]]+[my][[:space:]]*$/ {
-              sub(/default[[:space:]]+[my]/, "default n")
-            }
-            { print }
-          ' Config-build.in > Config-build.in.new
-          mv Config-build.in.new Config-build.in
-
-          printf '%s\n' \
-            '# CONFIG_ALL is not set' \
-            '# CONFIG_ALL_KMODS is not set' \
-            '# CONFIG_ALL_NONSHARED is not set' \
-            "CONFIG_PACKAGE_${PACKAGE_NAME}=m" > .config
-
-          make defconfig
-
-          for symbol in ALL ALL_KMODS ALL_NONSHARED; do
-            grep -Fqx "# CONFIG_${symbol} is not set" .config
-          done
-          grep -Fqx "CONFIG_PACKAGE_${PACKAGE_NAME}=m" .config
-
-          # For the pinned 25.12.5 mediatek/mt7622 SDK this is the complete
-          # module set: this package, nftables-nojson, kmod-nft-queue and the
-          # three coreutils packages. Only nft-core is selected as a built-in
-          # kernel package, and no firmware package is required.
-          test "$(grep -c '^CONFIG_PACKAGE_.*=m$' .config)" -eq 6
-          test "$(grep -c '^CONFIG_PACKAGE_kmod-.*=m$' .config)" -eq 1
-          test "$(grep -c '^CONFIG_PACKAGE_kmod-.*=y$' .config)" -eq 1
-
-          if grep -E '^CONFIG_PACKAGE_.*firmware.*=[my]$' .config; then
-            echo "Unexpected firmware package selected"
-            exit 1
-          fi
-
+          sh ../scripts/configure-openwrt-sdk.sh .
           make package/${PACKAGE_NAME}/compile V=s -j"$(nproc)"
 
       - name: Prepare artifact
-        run: |
-          set -eux
-
-          mkdir -p output_pkg
-
-          # Keep the licenses, corresponding GPL source and provenance in the
-          # same downloadable artifact as the binary package.
-          cp THIRD_PARTY_SOURCES.md luci-app-taoistfuchen/COPYING \
-            luci-app-taoistfuchen/LICENSE output_pkg/
-          cp third_party/sources/*.tar.gz output_pkg/
-
-          find openwrt-sdk/bin/packages/ -type f \( \
-            -name "${PACKAGE_NAME}*.ipk" -o \
-            -name "${PACKAGE_NAME}*.apk" \
-          \) -exec cp {} output_pkg/ \;
-
-          if ! find output_pkg -type f \( -name "*.ipk" -o -name "*.apk" \) | grep -q .; then
-            echo "No package was built"
-            exit 1
-          fi
-
-          (
-            cd output_pkg
-            sha256sum COPYING LICENSE THIRD_PARTY_SOURCES.md *.tar.gz *.*pk > SHA256SUMS
-          )
-
-          echo "Generated packages:"
-          find output_pkg -type f -maxdepth 1 -print
+        run: sh scripts/prepare-artifact.sh openwrt-sdk output_pkg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
