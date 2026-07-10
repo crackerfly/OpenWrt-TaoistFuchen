@@ -63,7 +63,11 @@ jobs:
           set -eux
 
           sha256sum -c third_party/SHA256SUMS
-          ./tests/run.sh
+          # The upload CGI intentionally accepts only root-owned private
+          # directories. OpenWrt runs it as root, so exercise the regression
+          # suite under the same privilege model instead of weakening that
+          # production security check for GitHub's unprivileged runner user.
+          sudo -E ./tests/run.sh
 
       - name: Install build dependencies
         run: |
