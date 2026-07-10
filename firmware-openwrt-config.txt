@@ -1,0 +1,219 @@
+apk-mbedtls base-files ca-bundle dnsmasq dropbear firewall4 fitblk fstools kmod-gpio-button-hotplug kmod-leds-gpio kmod-mt7622-firmware kmod-nft-offload libc libgcc libustream-mbedtls logd mtd netifd nftables odhcp6c odhcpd-ipv6only ppp ppp-mod-pppoe procd-ujail uboot-envtools uci uclient-fetch urandom-seed urngd wpad-basic-mbedtls kmod-mt7915-firmware kmod-usb3 luci luci-app-attendedsysupgrade ca-certificates libopenssl openssl-util curl openssh-sftp-server kmod-tcp-bbr kmod-sched-cake ip-full kmod-inet-diag kmod-nft-socket kmod-nft-tproxy kmod-tun kmod-nft-queue
+
+=============================================================
+
+
+
+# 说明: 此脚本作为 /rom/etc/uci-defaults/ 的一部分打入固件, 首次开机自动执行一次。
+# 目标: OpenWrt 25.12.x @ Linksys E8450 / Belkin RT3200 (MT7622 + MT7915E)
+# 需求落实:
+#   1) 不启用任何硬件加速: 不开硬件流量分流(HFO), 不开 MT7915E WED;
+#      仅保留软件流量分流 (若想连软件分流也关, 见 firewall 段注释)
+#   2) PPPoE 拨号 + IPv6: 复刻你现网 25.12.4 已验证可用的配置
+#      (wan.ipv6='auto' -> 自动生成动态接口 wan_6 跑 DHCPv6, 获取前缀委派)
+#   3) 自定义 apk 包: WAN 首次拨号成功后等 120 秒, 自动从 GitHub 下载安装 (见文末段落)
+
+wlan_name="Platual"
+wlan_password="5100061000"
+wifi_country="CN"            # 无线合规区域码 (不需要可删)
+hostname="VEILANCE"
+timezone="CST-8"             # 时区 (不需要可删, 删掉则保持 UTC)
+zonename="Asia/Taipei"
+
+root_password="Jmoziyu716"
+
+# 25.12 及以后 lan IP 使用 CIDR 写法:
+lan_ip_address="10.10.10.1/24"
+
+pppoe_username="051312114218"
+pppoe_password="034386"
+
+# WAN 自定义上游 DNS (对应截图红框; 置空则改用运营商下发的 DNS)
+wan_dns_1="223.6.6.6"
+wan_dns_2="119.29.29.29"
+
+# 记录执行日志, 首启后可查 /tmp/setup.log 排错
+exec >/tmp/setup.log 2>&1
+
+if [ -n "$root_password" ]; then
+  (echo "$root_password"; sleep 1; echo "$root_password") | passwd > /dev/null
+fi
+
+# ---------- 系统: 主机名 / 时区 ----------
+[ -n "$hostname" ] && uci set system.@system[0].hostname="$hostname"
+if [ -n "$timezone" ]; then
+  uci set system.@system[0].timezone="$timezone"
+  uci set system.@system[0].zonename="$zonename"
+fi
+uci commit system
+
+# ---------- LAN: IPv4 + IPv6 前缀分配 ----------
+[ -n "$lan_ip_address" ] && uci set network.lan.ipaddr="$lan_ip_address"
+
+# 从运营商委派的前缀里给 LAN 切一个 /64。
+# 注意默认值是 60 (不是 64): 若运营商只下发 /64, 60 会静默失败拿不到前缀;
+# 设 64 对 /64 和 /60 的委派都兼容, 与你现网一致。
+uci set network.lan.ip6assign='64'
+# 固定取第 0 个 /64 子前缀 (对应截图 "IPv6 assignment hint = 0")
+uci set network.lan.ip6hint='0'
+
+# 清除随机 ULA 前缀 (fdxx::/48)。前缀委派下发慢时, 客户端可能优先选 ULA
+# 源地址导致 IPv6 路由黑洞。你现网已清空, 此处保持一致。
+uci -q delete network.globals.ula_prefix
+uci commit network
+
+# ---------- 无线: 双频同名 WPA2 ----------
+if [ -n "$wlan_name" -a -n "$wlan_password" -a ${#wlan_password} -ge 8 ]; then
+  i=0
+  while uci -q get wireless.@wifi-device[$i] > /dev/null; do
+    uci set wireless.@wifi-device[$i].disabled='0'
+    [ -n "$wifi_country" ] && uci set wireless.@wifi-device[$i].country="$wifi_country"
+    i=$((i + 1))
+  done
+  i=0
+  while uci -q get wireless.@wifi-iface[$i] > /dev/null; do
+    uci set wireless.@wifi-iface[$i].disabled='0'
+    uci set wireless.@wifi-iface[$i].encryption='psk2'
+    uci set wireless.@wifi-iface[$i].ssid="$wlan_name"
+    uci set wireless.@wifi-iface[$i].key="$wlan_password"
+    i=$((i + 1))
+  done
+  uci commit wireless
+fi
+
+# ---------- WAN: PPPoE + IPv6 ----------
+if [ -n "$pppoe_username" -a -n "$pppoe_password" ]; then
+  uci set network.wan.proto='pppoe'
+  uci set network.wan.username="$pppoe_username"
+  uci set network.wan.password="$pppoe_password"
+
+  # IPv6 跑在 PPP 会话之上: 'auto' 会自动生成动态虚拟接口 wan_6
+  # (DHCPv6 客户端, 挂在 pppoe-wan 上) —— 与你现网截图完全一致。
+  # 注意: 用了 'auto' 就不要再手动建 wan6 接口, 否则两个 DHCPv6 客户端会打架。
+  uci set network.wan.ipv6='auto'
+  # 重拨时不发送 DHCPv6 Release, 尽量保住同一个前缀 (对应截图勾选项)
+  uci set network.wan.norelease='1'
+
+  # 默认镜像自带的静态 wan6 接口绑在物理 WAN 口上, 拨号场景下拿不到 v6
+  # 还会误导排查, 直接删除 (你现网也没有它)。
+  uci -q delete network.wan6
+
+  # 自定义上游 DNS, 不使用运营商下发 (peerdns=0 会一并传递给动态 wan_6)
+  if [ -n "$wan_dns_1" ]; then
+    uci set network.wan.peerdns='0'
+    uci add_list network.wan.dns="$wan_dns_1"
+    [ -n "$wan_dns_2" ] && uci add_list network.wan.dns="$wan_dns_2"
+  fi
+
+  uci commit network
+fi
+
+# ---------- LAN 侧 IPv6 下发 (odhcpd) ----------
+# RA + DHCPv6 服务器模式, 保留 SLAAC (安卓设备只认 SLAAC), NDP 代理禁用。
+# 这些即 25.12 默认值, 显式写死防止跑偏, 与截图一致。
+uci set dhcp.lan.ra='server'
+uci set dhcp.lan.dhcpv6='server'
+uci set dhcp.lan.ra_slaac='1'
+uci set dhcp.lan.ndp='disabled'
+# 总是通告默认路由 (前缀续租间隙不至于丢 v6 默认路由)
+uci set dhcp.lan.ra_default='1'
+uci commit dhcp
+
+# ---------- 防火墙 ----------
+# MSS 钳制 (mtu_fix) 是 PPPoE(MTU 1492) 下 "有 v6 地址、能 ping 通但网页
+# 一直转圈" 的关键。默认本来就开, 这里按 zone 名字定位并强制开启,
+# 顺带清掉上面已删除的 wan6 在 zone 里的残留引用。
+i=0
+while zone_name="$(uci -q get firewall.@zone[$i].name)"; do
+  if [ "$zone_name" = "wan" ]; then
+    uci set firewall.@zone[$i].mtu_fix='1'
+    uci set firewall.@zone[$i].masq='1'
+    uci -q del_list firewall.@zone[$i].network='wan6'
+  fi
+  i=$((i + 1))
+done
+
+# 只开软件流量分流; 硬件流量分流(HFO)明确关闭 —— 对应需求 1。
+# MT7622/MT7915 的硬件分流在处理 PPPoE 封装的 IPv6 包时有丢包前科。
+# 若之后发现软件分流也有问题, 执行:
+#   uci set firewall.@defaults[0].flow_offloading='0'; uci commit firewall
+uci set firewall.@defaults[0].flow_offloading='0'
+# uci set firewall.@defaults[0].flow_offloading_hw='0'
+uci commit firewall
+
+# MT7915E 的 WED (Wi-Fi 硬件加速) 不启用 —— 对应需求 1。
+# 以后想开回来, 取消下面两行注释即可 (注意用 >> 追加而不是 > 覆盖):
+# sed -i '/mt7915e/d' /etc/modules.conf 2>/dev/null
+# echo "options mt7915e wed_enable=Y" >> /etc/modules.conf
+
+# ---------- 内核参数 (沿用你原脚本; 不需要可整段删除) ----------
+# 注意: cake 需要固件软件包列表里有 kmod-sched-cake, bbr 需要 kmod-tcp-bbr,
+# 否则对应两行不会生效 (sysctl 会报 key 不存在, 但不影响其他项)。
+cat << "EOF" >> /etc/sysctl.conf
+
+# Custom Network Optimization
+net.ipv4.tcp_fastopen = 3
+net.core.default_qdisc = cake
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_max_syn_backlog = 512
+EOF
+sysctl -p /etc/sysctl.conf
+
+# ---------- 自定义 apk 包: 首次联网后自动下载安装 ----------
+# 用法: 把 GitHub 直链贴进下面引号里, 一行一个, 例如:
+#   custom_pkg_urls="
+#   https://github.com/user/repo/releases/download/v1.0/foo_1.0_aarch64_cortex-a53.apk
+#   https://github.com/user/repo/releases/download/v1.0/luci-app-foo_1.0_all.apk
+#   "
+# 注意:
+#   - 25.12 用 apk 包管理器, 必须是 .apk 文件 (.ipk 装不上)
+#   - 架构必须是 aarch64_cortex-a53 (E8450/MT7622) 或 all
+#   - 第三方包无官方签名, 用 --allow-untrusted 安装, 务必确认来源可信
+#   - uci-defaults 执行时网络尚未就绪, 所以这里只安放一个 hotplug 钩子:
+#     WAN 首次拨号成功后等待 120 秒再后台下载安装; 全部成功后钩子自删,
+#     有失败则保留, 下次拨号/重启自动重试。日志: /root/custom-pkgs-install.log
+custom_pkg_urls="
+https://github.com/gSpotx2f/packages-openwrt/raw/master/25.12/luci-app-temp-status-0.8.1-r1.apk
+https://github.com/gSpotx2f/packages-openwrt/raw/master/25.12/luci-app-cpu-status-0.6.3-r1.apk
+"
+
+if [ -n "$(echo "$custom_pkg_urls" | tr -d '[:space:]')" ]; then
+  echo "$custom_pkg_urls" | sed '/^[[:space:]]*$/d' > /etc/custom-pkg-urls
+
+  cat > /etc/hotplug.d/iface/99-install-custom-pkgs << 'PKG_EOF'
+[ "$ACTION" = "ifup" ] && [ "$INTERFACE" = "wan" ] || exit 0
+[ -f /etc/custom-pkg-urls ] || exit 0
+[ -f /tmp/custom-pkgs.lock ] && exit 0
+touch /tmp/custom-pkgs.lock
+
+(
+  sleep 120  # 按需求: 拨号成功后等待 120 秒再开始下载, 确保网络完全就绪
+  ok=1
+  mkdir -p /tmp/custom-pkgs
+  for url in $(cat /etc/custom-pkg-urls); do
+    f="/tmp/custom-pkgs/${url##*/}"
+    n=0
+    while [ $n -lt 3 ]; do
+      wget -q -O "$f" "$url" && [ -s "$f" ] && break
+      n=$((n + 1))
+      sleep 20
+    done
+    if [ -s "$f" ]; then
+      echo ">>> installing ${url##*/}"
+      apk add --allow-untrusted "$f" || ok=0
+    else
+      echo ">>> download failed: $url"
+      ok=0
+    fi
+  done
+  if [ "$ok" = "1" ]; then
+    echo ">>> all custom packages installed, removing hook"
+    rm -f /etc/custom-pkg-urls /etc/hotplug.d/iface/99-install-custom-pkgs
+  fi
+  rm -rf /tmp/custom-pkgs
+  rm -f /tmp/custom-pkgs.lock
+) >> /root/custom-pkgs-install.log 2>&1 &
+PKG_EOF
+fi
+
+echo "All done!"
