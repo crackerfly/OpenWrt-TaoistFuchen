@@ -1,4 +1,0 @@
-config taoistfuchen 'main'
-	option enable '0'
-	option favicon '/etc/taoistfuchen/assets/default-logo.svg'
-	option logo '/etc/taoistfuchen/assets/default-logo.svg'
