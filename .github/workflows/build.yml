@@ -34,8 +34,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The package is scoped to OpenWrt 25.12.5 and bundles verified
-          # aarch64_cortex-a53 release binaries.
+          # The package is scoped to OpenWrt 25.12.5. FakeHTTP is the verified
+          # aarch64_cortex-a53 release binary; FakeSIP is built from the
+          # maintained source included in this repository.
           - openwrt_version: "25.12.5"
             target: "mediatek/mt7622"
             target_name: "mediatek-mt7622"
