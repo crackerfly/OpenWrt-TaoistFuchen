@@ -1,0 +1,351 @@
+#!/bin/sh
+
+ASSET_DIR="/etc/taoistfuchen/assets"
+PAYLOAD_DIR="/etc/taoistfuchen/fakehttp-payloads"
+DEFAULT_ASSET="/usr/share/taoistfuchen/assets/default-logo.svg"
+DEFAULT_COPY="$ASSET_DIR/default-logo.svg"
+STAGING_DIR="/var/run/taoistfuchen-upload"
+
+prepare_private_directory() {
+	local directory="$1" owner
+
+	[ ! -L "$directory" ] || return 1
+	if [ -e "$directory" ]; then
+		[ -d "$directory" ] || return 1
+	else
+		mkdir "$directory" || return 1
+	fi
+	[ -d "$directory" ] && [ ! -L "$directory" ] || return 1
+	owner="$(stat -c '%u' "$directory" 2>/dev/null)"
+	[ "$owner" = '0' ] || return 1
+	chmod 0700 "$directory"
+}
+
+for directory in /etc/taoistfuchen "$ASSET_DIR" "$PAYLOAD_DIR" "$STAGING_DIR"; do
+	prepare_private_directory "$directory" || {
+		logger -t taoistfuchen "refusing unsafe private directory: $directory" 2>/dev/null || true
+		exit 1
+	}
+done
+
+if [ -L "$DEFAULT_COPY" ]; then
+	rm -f "$DEFAULT_COPY" 2>/dev/null || exit 1
+fi
+if [ -f "$DEFAULT_ASSET" ] && [ ! -e "$DEFAULT_COPY" ]; then
+	cp "$DEFAULT_ASSET" "$DEFAULT_COPY" 2>/dev/null || true
+	chmod 600 "$DEFAULT_COPY" 2>/dev/null || true
+fi
+
+# Remove 1.x theme mutations in one migration pass. A legacy backup is restored
+# only when the current target still byte-for-byte equals the old selected
+# custom file; if a theme upgrade has already replaced it, the newer target is
+# preserved. Every unversioned backup is then deleted and is never used again.
+legacy_remove_managed_file() {
+	local target="$1" selected="$2" backup tmp
+
+	if [ -n "$selected" ] && [ -f "$selected" ] && [ ! -L "$selected" ] &&
+		[ -f "$target" ] && [ ! -L "$target" ] && cmp -s "$target" "$selected"; then
+		backup="${target}.backup"
+		if [ -f "$backup" ] && [ ! -L "$backup" ]; then
+			tmp="$(mktemp "${target%/*}/.taoistfuchen-restore.XXXXXX")" || tmp=''
+			if [ -n "$tmp" ] && cp "$backup" "$tmp" 2>/dev/null &&
+				chmod 0644 "$tmp" 2>/dev/null && mv -f "$tmp" "$target" 2>/dev/null; then
+				rm -f "$backup" 2>/dev/null || true
+				return 0
+			else
+				rm -f "$tmp" 2>/dev/null || true
+				logger -t taoistfuchen "unable to restore legacy theme asset: $target" 2>/dev/null || true
+				return 1
+			fi
+		else
+			# The old app created a managed target without a pre-existing vendor
+			# file, so there is nothing legitimate to restore.
+			rm -f "$target" 2>/dev/null || true
+		fi
+	fi
+
+	# If the theme already replaced the customized file, its current asset wins.
+	# Discard the unversioned backup after a successful/no-op migration; the
+	# failure branch above keeps it only so the next package run can retry.
+	rm -f "${target}.backup" 2>/dev/null || true
+	return 0
+}
+
+cleanup_legacy_theme_mutations() {
+	local legacy_logo legacy_favicon ext css bootstrap argon
+
+	legacy_logo="$(uci -q get taoistfuchen.main.logo)"
+	legacy_favicon="$(uci -q get taoistfuchen.main.favicon)"
+	bootstrap='/www/luci-static/bootstrap'
+	argon='/www/luci-static/argon/img'
+	css="$bootstrap/cascade.css"
+
+	if [ -f "$css" ] && grep -q 'TAOIST_FUCHEN_START' "$css" 2>/dev/null; then
+		sed -i '/\/\* TAOIST_FUCHEN_START \*\//,/\/\* TAOIST_FUCHEN_END \*\//d' "$css" 2>/dev/null || true
+		rm -f "${css}.gz" "${css}.br" 2>/dev/null || true
+	fi
+	rm -f "$bootstrap"/taoistfuchen_injected_logo.* 2>/dev/null || true
+	rm -f "${css}.backup" 2>/dev/null || true
+
+	ext="${legacy_favicon##*.}"
+	ext="$(printf '%s' "$ext" | tr 'A-Z' 'a-z')"
+	case "$ext" in
+		ico)
+			legacy_remove_managed_file /www/favicon.ico "$legacy_favicon" || true
+			rm -f "$bootstrap/logo_48.png.backup" "$bootstrap/logo.svg.backup" 2>/dev/null || true
+			;;
+		png)
+			legacy_remove_managed_file "$bootstrap/logo_48.png" "$legacy_favicon" || true
+			rm -f /www/favicon.ico.backup "$bootstrap/logo.svg.backup" 2>/dev/null || true
+			;;
+		svg)
+			legacy_remove_managed_file "$bootstrap/logo.svg" "$legacy_favicon" || true
+			rm -f /www/favicon.ico.backup "$bootstrap/logo_48.png.backup" 2>/dev/null || true
+			;;
+		*)
+			rm -f /www/favicon.ico.backup "$bootstrap/logo_48.png.backup" \
+				"$bootstrap/logo.svg.backup" 2>/dev/null || true
+			;;
+	esac
+
+	ext="${legacy_logo##*.}"
+	ext="$(printf '%s' "$ext" | tr 'A-Z' 'a-z')"
+	case "$ext" in
+		png)
+			legacy_remove_managed_file "$argon/logo.png" "$legacy_logo" || true
+			rm -f "$argon/logo.svg.backup" "$argon/logo-dark.svg.backup" 2>/dev/null || true
+			;;
+		svg)
+			legacy_remove_managed_file "$argon/logo.svg" "$legacy_logo" || true
+			legacy_remove_managed_file "$argon/logo-dark.svg" "$legacy_logo" || true
+			rm -f "$argon/logo.png.backup" 2>/dev/null || true
+			;;
+		*)
+			rm -f "$argon/logo.png.backup" "$argon/logo.svg.backup" \
+				"$argon/logo-dark.svg.backup" 2>/dev/null || true
+			;;
+	esac
+}
+
+cleanup_legacy_theme_mutations
+
+set_default() {
+	local package="$1" section="$2" option="$3" value="$4"
+	[ -n "$(uci -q get "$package.$section.$option")" ] || \
+		uci -q set "$package.$section.$option=$value"
+}
+
+normalize_fakesip_direction() {
+	local direction
+
+	direction="$(uci -q get fakesip.main.direction 2>/dev/null || true)"
+	case "$direction" in
+		inbound|outbound|both) return 0 ;;
+		'') ;;
+		*) logger -t taoistfuchen "resetting invalid FakeSIP traffic direction to outbound" 2>/dev/null || true ;;
+	esac
+	uci -q set fakesip.main.direction=outbound
+}
+
+normalize_fakesip_family() {
+	local family
+
+	family="$(uci -q get fakesip.main.family 2>/dev/null || true)"
+	case "$family" in
+		ipv4|ipv6|dual) return 0 ;;
+		'') ;;
+		*) logger -t taoistfuchen "resetting invalid FakeSIP address family to dual" 2>/dev/null || true ;;
+	esac
+	uci -q set fakesip.main.family=dual
+}
+
+migrate_interface_option() {
+	local package="$1" old
+
+	if uci -q export "$package" | grep -q '^[[:space:]]*option interface '; then
+		old="$(uci -q get "$package.main.interface")"
+		uci -q delete "$package.main.interface"
+		[ -n "$old" ] && uci -q add_list "$package.main.interface=$old"
+	fi
+}
+
+asset_file_allowed() {
+	local file="$1" kind="$2" name ext size signature dimensions width height
+
+	[ -f "$file" ] && [ ! -L "$file" ] || return 1
+	name="${file##*/}"
+	ext="${name##*.}"
+	ext="$(printf '%s' "$ext" | tr 'A-Z' 'a-z')"
+	case "$kind:$ext" in
+		logo:png|favicon:png) ;;
+		favicon:ico) ;;
+		*) return 1 ;;
+	esac
+
+	size="$(wc -c < "$file" 2>/dev/null)" || return 1
+	case "$size" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$size" -ge 1 ] && [ "$size" -le 524288 ] || return 1
+
+	case "$ext" in
+		png)
+			signature="$(od -An -tu1 -N8 "$file" 2>/dev/null)"
+			set -- $signature
+			[ "$#" -eq 8 ] &&
+				[ "$1" = 137 ] && [ "$2" = 80 ] && [ "$3" = 78 ] && [ "$4" = 71 ] &&
+				[ "$5" = 13 ] && [ "$6" = 10 ] && [ "$7" = 26 ] && [ "$8" = 10 ] || return 1
+			dimensions="$(dd if="$file" bs=1 skip=16 count=8 2>/dev/null | od -An -tu1)"
+			set -- $dimensions
+			[ "$#" -eq 8 ] || return 1
+			width=$((($1 * 16777216) + ($2 * 65536) + ($3 * 256) + $4))
+			height=$((($5 * 16777216) + ($6 * 65536) + ($7 * 256) + $8))
+			[ "$width" -ge 1 ] && [ "$width" -le 2048 ] &&
+				[ "$height" -ge 1 ] && [ "$height" -le 2048 ]
+			;;
+		ico)
+			signature="$(od -An -tu1 -N4 "$file" 2>/dev/null)"
+			set -- $signature
+			[ "$#" -eq 4 ] && [ "$1" = 0 ] && [ "$2" = 0 ] &&
+				[ "$3" = 1 ] && [ "$4" = 0 ]
+			;;
+	esac
+}
+
+migrate_asset_option() {
+	local option="$1" kind="$2" source name target in_asset_store=0
+
+	source="$(uci -q get "taoistfuchen.main.$option")"
+	[ -n "$source" ] || return 0
+	[ "$source" = "$DEFAULT_COPY" ] && return 0
+
+	name="${source##*/}"
+	case "$name" in
+		''|.*|*[!A-Za-z0-9._-]*)
+			uci -q set "taoistfuchen.main.$option=$DEFAULT_COPY"
+			return 0
+			;;
+	esac
+	case "$source" in
+		"$ASSET_DIR"/*)
+			if [ "$source" != "$ASSET_DIR/$name" ]; then
+				uci -q set "taoistfuchen.main.$option=$DEFAULT_COPY"
+				return 0
+			fi
+			in_asset_store=1
+			;;
+		/etc/taoistfuchen/*)
+			if [ "$source" != "/etc/taoistfuchen/$name" ]; then
+				uci -q set "taoistfuchen.main.$option=$DEFAULT_COPY"
+				return 0
+			fi
+			;;
+		*)
+			uci -q set "taoistfuchen.main.$option=$DEFAULT_COPY"
+			return 0
+			;;
+	esac
+
+	if ! asset_file_allowed "$source" "$kind"; then
+		# 1.x allowed arbitrary same-origin SVG. Do not carry those active
+		# documents into the hardened asset store; select the trusted default.
+		uci -q set "taoistfuchen.main.$option=$DEFAULT_COPY"
+		return 0
+	fi
+
+	[ "$in_asset_store" = 0 ] || return 0
+	target="$ASSET_DIR/$name"
+	[ -e "$target" ] || cp "$source" "$target" 2>/dev/null || return 0
+	chmod 600 "$target" 2>/dev/null || true
+	uci -q set "taoistfuchen.main.$option=$target"
+}
+
+# Preserve existing user selections while moving 1.x files into the restricted
+# asset directory. Empty selections become the trusted built-in SVG.
+migrate_asset_option logo logo
+migrate_asset_option favicon favicon
+set_default taoistfuchen main logo "$DEFAULT_COPY"
+set_default taoistfuchen main favicon "$DEFAULT_COPY"
+
+# Convert the old scalar device option to the new repeatable list.
+migrate_interface_option fakehttp
+migrate_interface_option fakesip
+
+wan_dev="$(awk '$2 == "00000000" { print $1; exit }' /proc/net/route 2>/dev/null)"
+if [ -n "$wan_dev" ]; then
+	[ -n "$(uci -q get fakehttp.main.interface)" ] || \
+		uci -q add_list "fakehttp.main.interface=$wan_dev"
+	[ -n "$(uci -q get fakesip.main.interface)" ] || \
+		uci -q add_list "fakesip.main.interface=$wan_dev"
+fi
+
+# FakeHTTP 2.0 defaults and migration of the former single hostname.
+set_default fakehttp main interface_mode selected
+set_default fakehttp main direction outbound
+set_default fakehttp main family dual
+set_default fakehttp main log_connections 0
+set_default fakehttp main repeat 2
+set_default fakehttp main ttl 3
+set_default fakehttp main hop_estimation 1
+set_default fakehttp main dynamic_ttl_pct 0
+set_default fakehttp main queue_num 8970
+set_default fakehttp main fwmark 0x8000
+set_default fakehttp main fwmask 0x8000
+
+if ! uci -q show fakehttp | grep -q '=payload$'; then
+	hostname="$(uci -q get fakehttp.main.hostname)"
+	[ -n "$hostname" ] || hostname="www.speedtest.net"
+	payload="$(uci -q add fakehttp payload)"
+	uci -q set "fakehttp.$payload.enabled=1"
+	uci -q set "fakehttp.$payload.type=http"
+	uci -q set "fakehttp.$payload.host=$hostname"
+fi
+uci -q delete fakehttp.main.hostname
+uci -q delete fakehttp.main.boot_delay
+
+# FakeSIP 0.9.4-r2 defaults new or incomplete configurations to outbound dual
+# stack while preserving every existing valid direction and family selection.
+set_default fakesip main interface_mode selected
+normalize_fakesip_direction
+normalize_fakesip_family
+set_default fakesip main port_mode exclude
+set_default fakesip main ports 53
+set_default fakesip main payload_mode auto
+set_default fakesip main repeat 2
+set_default fakesip main ttl 3
+set_default fakesip main hop_estimation 1
+set_default fakesip main dynamic_ttl_pct 0
+set_default fakesip main log_connections 0
+set_default fakesip main queue_num 8971
+set_default fakesip main fwmark 0x10000
+set_default fakesip main fwmask 0x10000
+uci -q delete fakesip.main.boot_delay
+
+uci -q commit taoistfuchen
+uci -q commit fakehttp
+uci -q commit fakesip
+
+# Remove the vulnerable 1.x file-log maintenance path during upgrades.
+if [ -f /etc/crontabs/root ] && grep -q 'taoistfuchen/logclean' /etc/crontabs/root; then
+	sed -i '\#taoistfuchen/logclean#d' /etc/crontabs/root 2>/dev/null || true
+	/etc/init.d/cron restart >/dev/null 2>&1 || true
+fi
+rm -f /tmp/fakehttp.log /tmp/fakesip.log \
+	/tmp/fakehttp.bootwait /tmp/fakesip.bootwait 2>/dev/null || true
+
+for file in \
+	/etc/init.d/taoistfuchen \
+	/etc/init.d/fakehttp \
+	/etc/init.d/fakesip \
+	/www/cgi-bin/taoistfuchen-upload; do
+	[ -f "$file" ] && chmod 755 "$file"
+done
+
+# All services are registered with procd at boot. Each init script self-gates
+# on its UCI enabled flag while still registering reload/interface triggers.
+for svc in taoistfuchen fakehttp fakesip; do
+	if [ -x "/etc/init.d/$svc" ]; then
+		/etc/init.d/$svc enable >/dev/null 2>&1 || true
+		/etc/init.d/$svc start  >/dev/null 2>&1 || true
+	fi
+done
+
+exit 0

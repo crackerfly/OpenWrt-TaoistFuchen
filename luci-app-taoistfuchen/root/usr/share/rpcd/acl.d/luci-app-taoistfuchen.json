@@ -1,0 +1,65 @@
+{
+	"luci-app-taoistfuchen-logo": {
+		"description": "Manage Taoist Fuchen Custom Logo",
+		"read": {
+			"uci": [ "taoistfuchen" ],
+			"file": {
+				"/etc/taoistfuchen/assets": [ "list", "read" ],
+				"/etc/taoistfuchen/assets/*": [ "read" ]
+			},
+			"ubus": {
+				"service": [ "list" ]
+			}
+		},
+		"write": {
+			"uci": [ "taoistfuchen" ],
+			"cgi-io": [ "upload" ],
+			"file": {
+				"/var/run/taoistfuchen-upload/pending-logo": [ "write" ],
+				"/var/run/taoistfuchen-upload/pending-favicon": [ "write" ]
+			}
+		}
+	},
+	"luci-app-taoistfuchen-fakehttp": {
+		"description": "Manage Taoist Fuchen FakeHTTP",
+		"read": {
+			"cgi-io": [ "exec" ],
+			"uci": [ "fakehttp", "fakesip" ],
+			"file": {
+				"/sys/class/net": [ "list" ],
+				"/proc/net/route": [ "read" ],
+				"/etc/taoistfuchen/fakehttp-payloads": [ "list", "read" ],
+				"/etc/taoistfuchen/fakehttp-payloads/*": [ "read" ],
+				"/sbin/logread -e fakehttp": [ "exec" ]
+			},
+			"ubus": {
+				"service": [ "list" ]
+			}
+		},
+		"write": {
+			"uci": [ "fakehttp" ],
+			"cgi-io": [ "upload" ],
+			"file": {
+				"/var/run/taoistfuchen-upload/pending-fakehttp": [ "write" ]
+			}
+		}
+	},
+	"luci-app-taoistfuchen-fakesip": {
+		"description": "Manage Taoist Fuchen FakeSIP",
+		"read": {
+			"cgi-io": [ "exec" ],
+			"uci": [ "fakesip", "fakehttp" ],
+			"file": {
+				"/sys/class/net": [ "list" ],
+				"/proc/net/route": [ "read" ],
+				"/sbin/logread -e fakesip": [ "exec" ]
+			},
+			"ubus": {
+				"service": [ "list" ]
+			}
+		},
+		"write": {
+			"uci": [ "fakesip" ]
+		}
+	}
+}
